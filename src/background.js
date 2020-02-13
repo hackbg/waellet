@@ -1,20 +1,28 @@
-import MemoryAccount from '@aeternity/aepp-sdk/es/account/memory'
-import Account from '@aeternity/aepp-sdk/es/account'
-// import ExtensionProvider from '@aeternity/aepp-sdk/es/provider/extension'
-
+import { phishingCheckUrl, getPhishingUrls, setPhishingUrl } from './popup/utils/phishing-detect';
+import { checkAeppConnected, initializeSDK, removeTxFromStorage, detectBrowser, parseFromStorage } from './popup/utils/helper';
+import WalletContorller from './wallet-controller'
+import Notification from './notifications';
+// import { getActiveAccount, getActiveNetwork, getSDK } from './popup/utils/aepp-utils'
 
 global.browser = require('webextension-polyfill');
 
 // listen for our browerAction to be clicked
 chrome.browserAction.onClicked.addListener(function (tab) {
-	// for the current tab, inject the "inject.js" file & execute it
+    // for the current tab, inject the "inject.js" file & execute it
 	chrome.tabs.executeScript(tab.id, {
-		file: 'inject.js'
-	});
+        file: 'inject.js'
+	}); 
 });
 
-chrome.browserAction.setBadgeText({ 'text': 'beta' });
-chrome.browserAction.setBadgeBackgroundColor({ color: "#FF004D"});
+setInterval(() => {
+    browser.windows.getAll({}).then((wins) => {
+        if(wins.length == 0) {
+            sessionStorage.removeItem("phishing_urls");
+            browser.storage.local.remove('isLogged')
+            browser.storage.local.remove('activeAccount')
+        }
+    });
+},5000);
 
 function getAccount() {
     return new Promise(resolve => {
@@ -27,103 +35,234 @@ function getAccount() {
             }
         })
     });
-  }
-// async function asyncCall() {
-//     console.log('calling');
-//     await 
-//     // expected output: 'resolved'
-// }
-  
-// asyncCall();
+}
 
-
-// getAccount()
-//     .then((account) => {
-//         // Init accounts
-//         const accounts = [
-//             // You can add your own account implementation,
-//             Account.compose({
-//                 init() {
-//                 },
-//                 methods: {
-//                     /**
-//                      * Sign data blob
-//                      * @function sign
-//                      * @instance
-//                      * @abstract
-//                      * @category async
-//                      * @rtype (data: String) => data: Promise[String]
-//                      * @param {String} data - Data blob to sign
-//                      * @return {String} Signed data blob
-//                      */
-//                     async sign(data) {
-//                     },
-//                     /**
-//                      * Obtain account address
-//                      * @function address
-//                      * @instance
-//                      * @abstract
-//                      * @category async
-//                      * @rtype () => address: Promise[String]
-//                      * @return {String} Public account address
-//                      */
-//                     async address() {
-//                     }
-//                 }
-//             })(),
-//             MemoryAccount(account)
-//         ]
-//         return accounts
-//     })
-//     .then((accounts) => {
-//         // Init extension stamp from sdk
-//         ExtensionProvider({
-//             // Provide post function (default: window.postMessage)
-//             postFunction: postToContent,
-//             // By default `ExtesionProvider` use first account as default account. You can change active account using `selectAccount (address)` function
-//             accounts: accounts,
-//             // Hook for sdk registration
-//             onSdkRegister: function (sdk) {
-//                 // sendDataToPopup(this.getSdks())
-//                 if (confirm('Do you want to share wallet with sdk ' + sdk.sdkId)) sdk.shareWallet() // SHARE WALLET WITH SDK
-//             },
-//             // Hook for signing transaction
-//             onSign: function ({sdkId, tx, txObject, sign}) {
-//                 // sendDataToPopup(this.getSdks())
-//                 if (confirm('Do you want to sign ' + JSON.stringify(txObject) + ' ?')) sign() // SIGN TX
-//             }
-//         }).then(provider => {
-//             // Subscribe from postMessages from page
-//             chrome.runtime.onMessage.addListener((msg, sender) => {
-//                 switch (msg.method) {
-//                     case 'pageMessage':
-//                         console.log(msg);
-//                         provider.processMessage(msg);
-//                         break
-//                 }
-//             })
-//         }).catch(err => {
-//             console.error(err)
-//         })
-//     });
-
-
-const postToContent = (data) => {
-    chrome.tabs.query({}, function (tabs) { // TODO think about direct direct communication with tab
-        const message = { method: 'waelletMessage', data };
-        tabs.forEach(({ id }) => chrome.tabs.sendMessage(id, message)) // Send message to all tabs
-    });
+const error = {
+    "error": {
+        "code": 1,
+        "data": {
+            "request": {}
+        },
+        "message": "Transaction verification failed"
+    },
+    "id": null,
+    "jsonrpc": "2.0"
 }
 
 
 
+browser.runtime.onMessage.addListener((msg, sender,sendResponse) => {
+    // let { activeAccount, account } = await getActiveAccount();
+    switch(msg.method) {
+        case 'phishingCheck':
+            let data = {...msg, extUrl: browser.extension.getURL ('./') };
+            phishingCheckUrl(msg.params.hostname)
+            .then(res => {
+                if(typeof res.result !== 'undefined' && res.result == 'blocked') {
+                    let whitelist = getPhishingUrls().filter(url => url === msg.params.hostname);
+                    if(whitelist.length) {
+                        data.blocked = false;
+                        return postPhishingData(data);
+                    }
+                    data.blocked = true;
+                    return postPhishingData(data);
+                }
+                data.blocked = false;
+                return postPhishingData(data);
+            });
+        break;
+        case 'setPhishingUrl':
+            let urls = getPhishingUrls();
+            urls.push(msg.params.hostname);
+            setPhishingUrl(urls);
+        break;
+        case 'aeppMessage':
+            switch(msg.params.type) {
+                case "txSign":
+                    checkAeppConnected(msg.params.hostname).then((check) => {
+                        if(check) {
+                            openAeppPopup(msg,'txSign')
+                            .then(res => {
+                                sendResponse(res)
+                            })
+                        }else {
+                            error.error.message = "Aepp not registered. Establish connection first"
+                            error.id = msg.id
+                            sendResponse(error)
+                        }
+                    });
+                break;
+                case 'connectConfirm':
+                    checkAeppConnected(msg.params.params.hostname).then((check) => {
+                        if(!check) {
+                            openAeppPopup(msg,'connectConfirm')
+                            .then(res => {
+                                sendResponse(res)
+                            })
+                        } else {
+                            error.error.message = "Connection already established"
+                            error.id = msg.id
+                            sendResponse(error)
+                        }
+                    })
+                break;
+                case 'getAddress':
+                    browser.storage.local.get('userAccount').then((user)=> {
+                        browser.storage.local.get('isLogged').then((data) => {
+                            if (data.isLogged && data.hasOwnProperty('isLogged')) {
+                                browser.storage.local.get('subaccounts').then((subaccounts) => {
+                                    browser.storage.local.get('activeAccount').then((active) => {
+                                        let activeIdx = 0
+                                        if(active.hasOwnProperty("activeAccount")) {
+                                            activeIdx = active.activeAccount
+                                        }
+                                        let address = subaccounts.subaccounts[activeIdx].publicKey
+                                        sendResponse({id:null, jsonrpc:"2.0",address})
+                                    })
+                                })
+                            }else {
+                                sendResponse({id:null, jsonrpc:"2.0",address:""})
+                            }
+                        })
+                    })
+                break;
+                        
+                case 'contractCall':
+                    checkAeppConnected(msg.params.hostname).then((check) => {
+                        if(check) {
+                            openAeppPopup(msg,'contractCall')
+                            .then(res => {
+                                sendResponse(res)
+                            })
+                        }else {
+                            error.error.message = "Aepp not registered. Establish connection first"
+                            error.id = msg.id
+                            sendResponse(error)
+                        }
+                    })
+                break;
 
-// // Subscribe from postMessages from page
-// chrome.runtime.onMessage.addListener((msg, sender) => {
-//     switch (msg.method) {
-//         case 'waelletMessage':
-//             console.log(msg);
-//             // processMessage(msg);
-//             break
-//     }
-// })
+                case 'signMessage':
+                    checkAeppConnected(msg.params.hostname).then((check) => {
+                        if(check) {
+                            openAeppPopup(msg,'signMessage')
+                            .then(res => {
+                                sendResponse(res)
+                            })
+                        }else {
+                            error.error.message = "Aepp not registered. Establish connection first"
+                            error.id = msg.id
+                            sendResponse(error)
+                        }
+                    })
+                break;
+
+                case 'verifyMessage':
+                    checkAeppConnected(msg.params.hostname).then((check) => {
+                        if(check) {
+                            openAeppPopup(msg,'verifyMessage')
+                            .then(res => {
+                                sendResponse(res)
+                            })
+                        }else {
+                            error.error.message = "Aepp not registered. Establish connection first"
+                            error.id = msg.id
+                            sendResponse(error)
+                        }
+                    })
+                break;
+            }
+        break
+    }
+
+    return true
+})
+
+
+const connectToPopup = (cb,type, id) => {
+    browser.runtime.onConnect.addListener((port) => {
+        port.onMessage.addListener((msg,sender) => {
+            msg.id = sender.name
+            if(id == sender.name) cb(msg)
+        });
+        port.onDisconnect.addListener(async (event) => {
+            let list = await removeTxFromStorage(event.name)
+            browser.storage.local.set({pendingTransaction: { list } }).then(() => {})
+            browser.storage.local.remove('showAeppPopup').then(() => {}); 
+            error.id = event.name
+            if(event.name == id) {
+                if(type == 'txSign') {
+                    error.error.message = "Transaction rejected by user"
+                    cb(error)
+                }else if(type == 'connectConfirm') {
+                    error.error.message = "Connection canceled"
+                    cb(error)
+                }else if(type == 'contractCall') {
+                    error.error.message = "Transaction rejected by user"
+                    cb(error)
+                }else {
+                    cb()
+                }
+            }
+        });
+   })
+}
+
+const openAeppPopup = (msg,type) => {
+    return new Promise((resolve,reject) => {
+        browser.storage.local.set({showAeppPopup:{ data: msg.params, type } } ).then( () => {
+            browser.windows.create({
+                url: browser.runtime.getURL('./popup/popup.html'),
+                type: "popup",
+                height: 680,
+                width:420
+            }).then((window) => {
+                connectToPopup((res) => {
+                    resolve(res)
+                }, type, msg.params.id)
+            })
+        })
+    })
+}
+
+const checkPendingTx = () => {
+    return new Promise((resolve,reject) => {
+        browser.storage.local.get('pendingTransaction').then((tx) => {
+            if(tx.hasOwnProperty("pendingTransaction")) {
+                resolve(false)
+            }else {
+                resolve(false)
+            }
+        })
+    })
+}
+
+const postPhishingData = (data) => {
+    browser.tabs.query({active:true, currentWindow:true}).then((tabs) => { 
+        const message = { method: 'phishingCheck', data };
+        tabs.forEach(({ id }) => browser.tabs.sendMessage(id, message)) 
+    });
+}
+
+const postToContent = (data, tabId) => {
+    const message = { method: 'aeppMessage', data };
+    browser.tabs.sendMessage(tabId, message)
+}
+
+const controller = new WalletContorller()
+
+browser.runtime.onConnect.addListener( ( port ) => {
+    let extensionUrl = 'chrome-extension'
+    if(detectBrowser() == 'Firefox') {
+        extensionUrl = 'moz-extension'
+    }
+    if((port.name == 'popup' && port.sender.id == browser.runtime.id && port.sender.url == `${extensionUrl}://${browser.runtime.id}/popup/popup.html` && detectBrowser() != 'Firefox') || ( detectBrowser() == 'Firefox' && port.name == 'popup' && port.sender.id == browser.runtime.id ) ) {
+        port.onMessage.addListener(({ type, payload, uuid}) => {
+            controller[type](payload).then((res) => {
+                port.postMessage({ uuid, res })
+            })
+        })  
+    }
+})  
+
+const notification = new Notification();

@@ -1,28 +1,28 @@
 <template>
   <div class="popup">
-    <p>{{language.pages.receive.heading}}</p>
+    <div class="actions">
+      <button class="backbutton toAccount" @click="navigateAccount"><ae-icon name="back" /> {{$t('pages.receive.backToAccount') }}</button>
+    </div>
+    <p>{{$t('pages.receive.heading') }}</p>
     <ae-card fill="neutral" align="center">
       <div class="qr-wrapper">
         <qrcode-vue :value="account.publicKey"></qrcode-vue>
       </div>
       <ae-address :value="account.publicKey" gap=0 />
       <ae-toolbar fill="neutral" align="right" slot="footer">
-        <ae-button face="toolbar" v-clipboard:copy="account.publicKey" @click="popupAlert({ name: 'account', type: 'publicKeyCopied' })">
+        <ae-button face="toolbar" v-clipboard:copy="account.publicKey" @click="copy">
           <ae-icon name="copy" />
-          {{ language.buttons.copy }}
+          {{ $t('pages.receive.copy') }}
         </ae-button>
       </ae-toolbar>
     </ae-card>
+    <popup :popupSecondBtnClick="popup.secondBtnClick"></popup>
 
-    <div class="actions">
-      <ae-button face="round" fill="alternative" extend @click="navigateAccount">{{language.buttons.backToAccount}}</ae-button>
-    </div>
   </div>
 </template>
 
 <script>
 import { mapGetters } from 'vuex';
-import locales from '../../locales/locales.json';
 import QrcodeVue from 'qrcode.vue';
 
 export default {
@@ -32,18 +32,15 @@ export default {
   },
   data() {
     return {
-      heading: 'Receive AE tokens',
-      language: locales['en']
     }
   },
-  locales,
   computed: {
-    ...mapGetters(['account'])
+    ...mapGetters(['account','popup'])
   },
   methods: {
-    popupAlert(payload) {
-      this.$store.dispatch('popupAlert', payload)
-    },
+      copy(){
+          this.$store.dispatch('popupAlert', { name: 'account', type: 'publicKeyCopied'});
+      },
     navigateAccount() {
       this.$router.push('/account')
     }
@@ -53,7 +50,6 @@ export default {
 
 <style lang="scss" scoped>
 @import '../../../common/base';
-
 .qr-wrapper {
   display: flex;
   justify-content: center;
@@ -63,8 +59,5 @@ export default {
   border-radius: 6px;
 }
 
-.actions {
-  margin-top: 5px;
-}
 
 </style>

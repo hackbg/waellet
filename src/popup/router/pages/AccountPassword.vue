@@ -1,100 +1,119 @@
 <template>
     <div >
         <main>
-            <div class="wrapper">
+            <div class="popup">
                 <div v-if="!loading">
-                    <p>{{title}}</p>
+                    <h3>{{title}}</h3>
+                    <ae-button @click="navigateToIndex" class="closeBtn">
+                        <ae-icon name="close" />
+                    </ae-button>
+                    <password v-if="confirmPassword" v-model="accountPassword" strength-meter-class="passwordStrengthMeter" :strength-meter-only="true" @score="getScore"/>
                     <ae-input  placeholder="" class="my-2" label="Password" v-bind="inputError">
-                        <input type="password" class="ae-input" min="4"  v-model="accountPassword" slot-scope="{ context }" @focus="context.focus = true" @blur="context.focus = false" />
-                        <ae-toolbar v-if="errorMsg == 'length'" slot="footer">Password must be at lest 4 symbols! </ae-toolbar>
-                        <ae-toolbar v-if="loginError" slot="footer">Incorrect password !</ae-toolbar>
+                        <input type="password" class="ae-input" :min="minPasswordLength"  v-model="accountPassword" slot-scope="{ context }" @focus="context.focus = true" @blur="context.focus = false" />
+                        <ae-toolbar v-if="errorMsg == 'length'" slot="footer">{{ $t('pages.accountPassword.passwordSymbolsError') }}{{ minPasswordLength }}</ae-toolbar>
+                        <ae-toolbar v-if="errorMsg == 'weak'" slot="footer">{{ $t('pages.accountPassword.weakPasswordError') }}</ae-toolbar>
+                        <ae-toolbar v-if="loginError" slot="footer">{{ $t('pages.accountPassword.incorrectPasswordError') }}</ae-toolbar>
                     </ae-input>
-                    <ae-input  v-if="confirmPassword"   placeholder="" class="my-2" label="Repeat Password" v-bind="inputError">
-                        <input type="password" class="ae-input" min="4" v-model="confirmAccountPassword" slot-scope="{ context }" @focus="context.focus = true" @blur="context.focus = false" />
-                        <ae-toolbar v-if="errorMsg == 'match'" slot="footer">Passwords doesn't match! </ae-toolbar>
+                    <ae-input  v-if="confirmPassword" placeholder="" class="my-2" label="Repeat Password" v-bind="inputError">
+                        <input type="password" class="ae-input" :min="minPasswordLength" v-model="confirmAccountPassword" slot-scope="{ context }" @focus="context.focus = true" @blur="context.focus = false" />
+                        <ae-toolbar v-if="errorMsg == 'match'" slot="footer">{{ $t('pages.accountPassword.passwordDoesntMatchError') }} </ae-toolbar>
                     </ae-input>
-                    <ae-button face="round" extend fill="primary" @click="clickAction({accountPassword,data,confirmAccountPassword})">{{buttonTitle}}</ae-button>
+                    <ae-button face="round" extend fill="primary" @click="clickAction({accountPassword,data,confirmAccountPassword, termsAgreed})">{{buttonTitle}}</ae-button>
                 </div>
-                <Loader :loading="loading" v-bind="{'content':language.strings.securingAccount}"></Loader>
+                <Loader size="small" :loading="loading" v-bind="{'content':$t('pages.accountPassword.securingAccount')}"></Loader>
             </div>
         </main>
-    </div>
+    </div> 
 </template>
-
 <script>
-import locales from '../../locales/locales.json';
 import { addressGenerator } from '../../utils/address-generator';
 import { decrypt } from '../../utils/keystore';
+import { mnemonicToSeed } from '@aeternity/bip39';
+import { generateHdWallet, getHdWalletAccount } from '../../utils/hdWallet';
+import { MINPASSWORDLENGTH } from '../../utils/constants';
+import Password from 'vue-password-strength-meter';
+import { mapGetters } from 'vuex'
+import { redirectAfterLogin } from '../../utils/helper';
+
 export default {
-    props: ['data','confirmPassword','buttonTitle','type','title'],
+    props: ['data','confirmPassword','buttonTitle','type','title', 'termsAgreed'],
+    components: { Password },
     data() {
         return {
-            language: locales['en'],
             accountPassword:'',
             confirmAccountPassword:'',
             inputError:{},
             loading:false,
             errorMsg:'',
-            loginError:false
+            loginError:false,
+            minPasswordLength: MINPASSWORDLENGTH,
+            passwordScore: 0
         }
     },
-    locales,
+    computed: {
+        ...mapGetters(['tokens'])
+    },
     methods: {
-        clickAction({accountPassword,data,confirmAccountPassword}) {
-            if((this.confirmPassword && accountPassword !== confirmAccountPassword) || accountPassword.length < 4 || (this.confirmPassword && confirmAccountPassword < 4))  {
+        navigateToIndex() {
+            this.$router.push('/');
+        },
+        getScore(score) {
+            this.passwordScore = score;
+        },
+        clickAction({accountPassword,data,confirmAccountPassword, termsAgreed}) {
+            if((this.confirmPassword && accountPassword !== confirmAccountPassword) || accountPassword.length < this.minPasswordLength || (this.confirmPassword && confirmAccountPassword < this.minPasswordLength))  {
                 this.inputError = {error:""};
-                if(accountPassword.length < 4 || (this.confirmPassword && confirmAccountPassword < 4)){
+                if(accountPassword.length < this.minPasswordLength || (this.confirmPassword && confirmAccountPassword < this.minPasswordLength)){
                     this.errorMsg = "length";
                 }
                 if(this.confirmPassword && accountPassword !== confirmAccountPassword) {
                     this.errorMsg = "match";
                 }
+                if(this.passwordScore < 3) {
+                    this.errorMsg = "weak";
+                }
                 return;
             }
             this.inputError = {};
             if(this.type == 'privateKey') {
-                this.importPrivateKey({accountPassword,data});
+                this.importPrivateKey({accountPassword,data, termsAgreed});
             }else if(this.type == 'seedPhrase') {
-                this.importSeedPhrase({accountPassword,data});
+                this.importSeedPhrase({accountPassword,data, termsAgreed});
             }else if(this.type == 'keystore') {
-                this.importKeystore({accountPassword,data});
+                this.importKeystore({accountPassword,data, termsAgreed});
             }else if(this.type == 'generateEncrypt') {
-                this.generateAddress({accountPassword});
+                this.generateAddress({accountPassword,termsAgreed});
             }else if(this.type == 'login') {
                 this.login({accountPassword});
             }
-            // this.$emit('clickAction',{accountPassword,data});
         },
-        importPrivateKey: async function importPrivateKey({accountPassword,data}) {
+        importPrivateKey: async function importPrivateKey({accountPassword,data,termsAgreed}) {
             this.loading = true;
-            const keyPair = await addressGenerator.importPrivateKey(accountPassword, data);
-            chrome.storage.sync.set({userAccount: keyPair}, () => {
-                chrome.storage.sync.set({isLogged: true}, () => {
-                    this.$store.commit('UPDATE_ACCOUNT', keyPair);
-                    this.$store.commit('SWITCH_LOGGED_IN', true);
-                    this.$router.push('/account');
-                }); 
-            });
+            let address = await this.$store.dispatch('generateWallet', { seed: data })
+            const keyPair = await addressGenerator.importPrivateKey(accountPassword, data, address);
+            if(keyPair) {
+                this.setLogin(keyPair, false, termsAgreed, accountPassword);
+            }
+            
         },
-        importSeedPhrase({accountPassword,data}) {
+        importSeedPhrase: async function importSeedPhrase({accountPassword,data,termsAgreed}) {
             this.loading = true;
-            console.log("Import seed Phrase");
-            console.log("password" + accountPassword);
-            console.log("seed" + data);
+            let seed = mnemonicToSeed(data)
+            let address = await this.$store.dispatch('generateWallet', { seed })
+            const keyPair = await addressGenerator.generateKeyPair(accountPassword,seed.toString('hex'),address);
+            if(keyPair) {
+                this.setLogin(keyPair, false, termsAgreed, accountPassword);
+            }
         },
-        importKeystore:async function importKeystore({accountPassword,data}) {
+        importKeystore:async function importKeystore({accountPassword,data,termsAgreed}) {
             this.loading = true;
             const encryptedPrivateKey = JSON.parse(data);
-            let match = await decrypt(encryptedPrivateKey.crypto.ciphertext,accountPassword,encryptedPrivateKey.crypto.cipher_params.nonce,encryptedPrivateKey.crypto.kdf_params.salt);
-            if(match) {
-                let keyPair = {encryptedPrivateKey:JSON.stringify(encryptedPrivateKey),secretKey:'',publicKey:encryptedPrivateKey.public_key};
-                chrome.storage.sync.set({userAccount: keyPair}, () => {
-                    chrome.storage.sync.set({isLogged: true}, () => {
-                        this.$store.commit('UPDATE_ACCOUNT', keyPair);
-                        this.$store.commit('SWITCH_LOGGED_IN', true);
-                        this.$router.push('/account');
-                    });
-                });
+            let seed = await addressGenerator.decryptKeystore(encryptedPrivateKey, accountPassword)
+            if(seed !== false) {
+                let address = await this.$store.dispatch('generateWallet', { seed })
+                
+                let keyPair = {encryptedPrivateKey:JSON.stringify(encryptedPrivateKey),publicKey:encryptedPrivateKey.public_key};
+                this.setLogin(keyPair,true,termsAgreed, accountPassword);
             }else {
                 this.loginError = true;
                 this.errorMsg = "";
@@ -103,21 +122,66 @@ export default {
                 
             }
         },
-        generateAddress: async function generateAddress({ accountPassword }) {
-            this.loading = true;
-            const keyPair = await addressGenerator.generateKeyPair(accountPassword);
-            chrome.storage.sync.set({userAccount: keyPair}, () => {
-                this.$store.commit('UPDATE_ACCOUNT', keyPair);
-                // this.$router.push('/account');
-                this.$router.push('/seed');
+        async setLogin(keyPair, fixAccount = false, termsAgreed, accountPassword) {
+            if(fixAccount) {
+                
+                let address = await this.$store.dispatch('getAccount', { idx:0 })
+                if(address !== keyPair.publicKey) {
+                    keyPair.publicKey = address;
+                    let encPrivateKey = JSON.parse(keyPair.encryptedPrivateKey);
+                    encPrivateKey.publicKey = address;
+                    keyPair.encryptedPrivateKey = JSON.stringify(encPrivateKey);
+                }
+            }
+            browser.storage.local.set({userAccount: keyPair}).then(() => {
+                browser.storage.local.set({isLogged: true}).then(async () => {
+                    browser.storage.local.set({ termsAgreed: termsAgreed }).then(() => {
+                        let sub = [];
+                        sub.push({
+                            name:'Main account',
+                            publicKey:keyPair.publicKey,
+                            balance:0,
+                            root:true
+                        });
+                        browser.storage.local.set({subaccounts: sub}).then(() => {
+                            browser.storage.local.set({activeAccount: 0}).then( () => {
+                                this.$store.commit('SET_ACTIVE_ACCOUNT', {publicKey:keyPair.publicKey,index:0});
+                            });
+                            this.$store.dispatch('setSubAccounts', sub).then(async () => {
+                                this.$store.commit('UNSET_TOKENS')
+                                this.$store.dispatch('setTokens',this.tokens)
+                                this.$store.commit('UPDATE_ACCOUNT', keyPair);
+                                this.$store.commit('SWITCH_LOGGED_IN', true);
+                                redirectAfterLogin(this)
+                            });
+                        });
+                        
+                    });
+                });
             });
-            
         },
+        generateAddress: async function generateAddress({ accountPassword, termsAgreed}) {
+            this.loading = true;
+            browser.storage.local.set({accountPassword: accountPassword}).then(() => {
+                this.$router.push({
+                    name: 'seed',
+                    params: {
+                        termsAgreed: termsAgreed
+                    },
+                });
+            });
+        }
     }
 }
 
 </script>
 <style lang="scss" scoped>
 @import '../../../common/base';
-
+.closeBtn {
+    position: absolute !important;
+    top: 17px;
+    right: 16px;
+    font-size: 18px;
+    color: #000;
+}
 </style>

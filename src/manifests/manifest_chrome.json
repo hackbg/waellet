@@ -6,9 +6,9 @@
   "permissions": [
     "storage",
     "unlimitedStorage",
-    "clipboardWrite",
+    "videoCapture",
     "activeTab",
-    "webRequest",
+    "clipboardWrite",
     "notifications"
   ],
   "icons": {
@@ -19,6 +19,7 @@
     "default_title": "waellet",
     "default_popup": "popup/popup.html"
   },
+  "content_security_policy": "script-src 'self' 'unsafe-eval'; object-src 'self'",
   "background": {
     "scripts": [
       "background.js"
@@ -27,7 +28,7 @@
   },
   "content_scripts": [{
     "run_at": "document_start",
-    "all_frames": true,
+    "all_frames":true,
     "matches": [
       "https://*/*",
       "http://*/*"
@@ -35,7 +36,11 @@
     "js": ["inject.js"]
   }],
   "web_accessible_resources": [
-    "inject.js"
+    "inject.js",
+    "phishing/phishing.html",
+    "phishing/phishing.js",
+    "aepp.js",
+    "popup/CameraRequestPermission.html"
   ],
   "options_ui": {
     "page": "options/options.html",
